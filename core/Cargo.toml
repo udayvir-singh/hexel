@@ -4,3 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bigdecimal = "0.4.4"
+deserr = "0.6.1"
+futures = "0.3.30"
+json5 = "0.4.1"
+mlua = { version = "0.9.8", features = ["luajit", "vendored", "serialize"] }
+num-bigint = { version = "0.4.6", features = ["rand"] }
+rand = "0.8.5"
+serde = "1.0.202"
+serde_json = "1.0.117"
+serde_urlencoded = "0.7.1"
+serde_yaml = "0.9.34"
+tokio = { version = "1.38.1", features = ["full"] }
