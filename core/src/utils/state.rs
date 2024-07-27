@@ -23,7 +23,7 @@ use super::{consts::*, error::*, num::*};
 /// Represents the state of a module that contains values associated with each identifier.
 pub struct State {
     fileroot: String,
-    printer: Option<Box<dyn Fn(String)>>,
+    printer: Box<dyn Fn(String)>,
     data: RwLock<HashMap<String, StateValue>>,
 }
 
@@ -46,7 +46,7 @@ impl State {
     /// todo
     #[inline]
     #[must_use]
-    pub fn new(fileroot: String, printer: Option<Box<dyn Fn(String)>>) -> Self {
+    pub fn new(fileroot: String, printer: Box<dyn Fn(String)>) -> Self {
         Self {
             fileroot,
             printer,
@@ -138,9 +138,7 @@ impl State {
                 // run macro
                 lua.scope(|scope| {
                     let data = unsafe { mem::transmute(&self.data) };
-                    let printer = self.printer
-                        .as_ref()
-                        .map(|x| unsafe { mem::transmute(x.as_ref()) });
+                    let printer = unsafe { mem::transmute(self.printer.as_ref()) };
 
                     Self::inject_state_api(&lua, scope, printer, data)?;
 
@@ -352,26 +350,24 @@ impl State {
     fn inject_state_api(
         lua: &Lua,
         scope: &LuaScope,
-        printer: Option<&'static dyn Fn(String)>,
+        printer: &'static dyn Fn(String),
         data: &'static RwLock<HashMap<String, StateValue>>,
     ) -> LuaResult<()> {
         let globals = lua.globals();
 
         // inject printer
-        if let Some(func) = printer {
-            let print = scope.create_function(move |_, args: LuaVariadic<LuaValue>| {
-                let mut xs = Vec::with_capacity(args.len());
+        let print = scope.create_function(move |_, args: LuaVariadic<LuaValue>| {
+            let mut xs = Vec::with_capacity(args.len());
 
-                for value in args {
-                    xs.push(value.to_string()?);
-                }
+            for value in args {
+                xs.push(value.to_string()?);
+            }
 
-                func(xs.join("\t"));
-                Ok(())
-            })?;
+            printer(xs.join("\t"));
+            Ok(())
+        })?;
 
-            globals.set("print", print)?;
-        }
+        globals.set("print", print)?;
 
         // inject state getter
         let get = scope.create_function(move |lua, identifier: LuaValue| {

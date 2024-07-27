@@ -16,7 +16,7 @@ use std::sync::mpsc::channel;
 use std::thread;
 
 use crate::lang::{lexer::*, parser::*};
-use crate::utils::{ast::*, consts::*, num::*, position::*, state::*, token::*};
+use crate::utils::{ast::*, consts::*, num::*, position::*, state::*, token::*, data::*};
 
 macro_rules! v {($($x:expr),* $(,)?) => {vec![$($x.to_string(),)*]}}
 macro_rules! vr {($($x:expr),* $(,)?) => {&v![$($x,)*]}}
@@ -27,9 +27,21 @@ macro_rules! vr {($($x:expr),* $(,)?) => {&v![$($x,)*]}}
 // request:seq request:method request:url request:version
 // script:dir script:name script:path
 
+use futures::future::join_all;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinHandle;
+
 #[allow(unused)]
-fn main() {
+#[tokio::main]
+async fn main() {
     println!("Hello, world!");
+
+    let json = Json::from_str("{\"a\": [1, 2]}").unwrap();
+
+    println!("json = {:#?}",
+        json.get(&["a", "foo", "baz", "bar", "lol"])
+        .map(|x| x.to_string())
+    );
 
     // println!("{}", STANDARD_FUNCTIONS.iter().map(|x| x.0).collect::<Vec<_>>().join("\n"));
 
@@ -42,13 +54,13 @@ fn main() {
 fn test_state() {
     let mut foo = Rc::new(RefCell::new(vec![1]));
     let mut fr = foo.clone();
-    let printer = move |x: String| {
-        fr.borrow_mut().push(1);
-        println!("{}", x);
-    };
+
     let mut state = State::new(
         "/home/user/cool/hexel/".to_string(),
-        Some(Box::new(printer)),
+        Box::new(move |x: String| {
+            fr.borrow_mut().push(1);
+            println!("{}", x);
+        })
     );
 
     state.set_string("foo".to_string(), "hello".to_string());
@@ -70,7 +82,7 @@ fn test_state() {
             .to_string(),
     );
 
-    println!("r = {:#?}", state.eval("math:random", vr!["0", "2"]));
+    println!("r = {:#?}", state.eval("lol", vr!["0", "2"]));
 }
 
 /*
@@ -83,17 +95,17 @@ yaml:to_form
 #[allow(unused)]
 fn test_parser() {
     let source = b"\
-#var foo = ${math:div ${math:add 10 ${foo}}
-                      ${test ${name}}}
-
 #var foo = ${cond
-             ${bool:and ${math:eq? ${foo} 10}
-                        ${math:eq? ${baz} 1}} 10
-             ;;
-             ${bool:or ${math:eq? ${math:add ${lol} 10} 10}
-                       ${math:eq? ${baz} 1}} 10
-             ;;
-             'default value'}
+  ${bool:and ${math:eq? ${foo} 10}
+             ${math:eq? ${baz} 1}}
+  'first value'
+  ;;
+  ${bool:or ${math:eq? ${math:add ${lol} 10} 20}
+            ${math:eq? ${baz} 1}}
+  'second value'
+  ;;
+  'default value'
+}
 
 GET foo
 

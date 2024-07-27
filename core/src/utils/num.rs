@@ -23,24 +23,24 @@ use super::consts::*;
  *        MACROS        *
  * -------------------- */
 macro_rules! impl_ops {
-    ($struct:ident . $value:ident, Neg :: neg) => {
-        impl Neg for $struct {
+    ($name:ident ($field:ident), Neg :: neg) => {
+        impl Neg for $name {
             type Output = Self;
             fn neg(self) -> Self {
-                Self::new(Neg::neg(self.$value))
+                Self::new(Neg::neg(self.$field))
             }
         }
     };
-    ($struct:ident . $value:ident, $trait:ident :: $fn:ident) => {
-        impl $trait for $struct {
+    ($name:ident ($field:ident), $trait:ident :: $method:ident) => {
+        impl $trait for $name {
             type Output = Self;
-            fn $fn(self, rhs: Self) -> Self {
-                Self::new($trait::$fn(self.$value, rhs.$value))
+            fn $method(self, rhs: Self) -> Self {
+                Self::new($trait::$method(self.$field, rhs.$field))
             }
         }
     };
-    ($struct:ident . $value:ident, $($trait:ident :: $fn:ident),* $(,)?) => {
-        $(impl_ops!($struct . $value, $trait :: $fn);)*
+    ($name:ident ($field:ident), $($trait:ident :: $method:ident),* $(,)?) => {
+        $(impl_ops!($name($field), $trait :: $method);)*
     };
 }
 
@@ -55,7 +55,7 @@ pub struct Number {
 }
 
 impl_ops!(
-    Number.value,
+    Number(value),
     Add::add,
     Sub::sub,
     Mul::mul,

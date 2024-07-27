@@ -81,7 +81,7 @@ pub struct Terminal {
     /// The name of the terminal token.
     pub name: TokenName,
     /// The raw string value associated with the token.
-    pub value: Box<str>,
+    pub value: BString,
     /// The position in the source code where this token was created.
     pub position: Position,
 }

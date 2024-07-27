@@ -30,6 +30,7 @@
 
 pub mod ast;
 pub mod consts;
+pub mod data;
 pub mod error;
 // pub mod fmt;
 // pub mod highlight;
