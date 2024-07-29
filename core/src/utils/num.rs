@@ -8,6 +8,7 @@ use std::{
     str::FromStr,
 };
 
+use bstr::ByteSlice;
 use bigdecimal::{
     num_bigint::{Sign, ToBigInt},
     Context, Num, Signed, ToPrimitive,
@@ -119,8 +120,17 @@ impl Number {
      *          NEW         *
      * -------------------- */
     /// todo
+    #[inline]
+    #[must_use]
     pub fn new(value: BigDecimal) -> Self {
         Self { value }
+    }
+
+    /// todo
+    #[inline]
+    #[must_use]
+    pub fn from_bytes<T: AsRef<[u8]>>(source: T) -> Result<Self, String> {
+        NumberParser::new(source.as_ref().chars().collect()).parse()
     }
 
 

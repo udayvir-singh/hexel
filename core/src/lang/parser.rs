@@ -1,6 +1,8 @@
 //! Provides parsers for converting source code into an Abstract Syntax Tree (AST).
 
-use std::{borrow::Cow, collections::VecDeque, iter::{Enumerate, Peekable}, mem, ops::Range, rc::Rc, slice::Iter};
+use std::{mem, collections::VecDeque, rc::Rc};
+
+use bstr::{BStr, ByteSlice};
 
 use super::lexer::Lexer;
 use crate::utils::{ast::*, consts::*, error::*, position::*, token::*};
@@ -201,7 +203,7 @@ impl<'a> IterativeParser<'a> {
                 self.handle_decorator_state(head, head_idx)
             }
             // parse as request if line starts with a valid HTTP method
-            (TokenKind::Atom, _) if HTTP_METHODS.contains(&head[head_idx].value()) => {
+            (TokenKind::Atom, _) if Self::is_valid_method(head[head_idx].value()) => {
                 self.state = ParserState::Request;
                 self.handle_request_state(head, head_idx)
             }
@@ -224,7 +226,7 @@ impl<'a> IterativeParser<'a> {
     }
 
     fn parse_header_statement(&mut self, head: Vec<Token>, head_idx: usize) -> AstNode {
-        match head[head_idx + 1].value() {
+        match unsafe { head[head_idx + 1].value().to_str_unchecked() } {
             // parse assign statement
             "var" => self.parse_assign_statement(head),
             // parse macro statement
@@ -351,7 +353,7 @@ impl<'a> IterativeParser<'a> {
             // validate parameter
             if param_error.is_none() {
                 let param_bounds = neck.len()..neck.len() + 1;
-                let param_name = if let b'*' | b'+' = token_val.as_bytes()[0] {
+                let param_name = if let b'*' | b'+' = token_val[0] {
                     multi_count += 1;
                     &token_val[1..]
                 } else {
@@ -623,7 +625,7 @@ impl<'a> IterativeParser<'a> {
                 None
             }
             // parse as request if line starts with a valid HTTP method
-            (TokenKind::Atom, _) if HTTP_METHODS.contains(&head[head_idx].value()) => {
+            (TokenKind::Atom, _) if Self::is_valid_method(head[head_idx].value()) => {
                 self.state = ParserState::Request;
                 self.handle_request_state(head, head_idx)
             }
@@ -686,7 +688,7 @@ impl<'a> IterativeParser<'a> {
 
             if !(head.len() - head_idx == 2 && head[head_idx + 1].kind() == TokenKind::Atom) {
                 err(ErrorCode::PD02, RequestComponentScope::Head, Some(head_idx..head.len()))
-            } else if !DECORATORS.contains(&head[head_idx + 1].value()) {
+            } else if !Self::is_valid_decorator(head[head_idx + 1].value()) {
                 err(ErrorCode::PD03, RequestComponentScope::Head, Some(head_idx+1..head.len()))
             } else if body_empty {
                 err(ErrorCode::PD04, RequestComponentScope::None, None)
@@ -948,14 +950,11 @@ impl<'a> IterativeParser<'a> {
     /* -------------------- *
      *        UTILS         *
      * -------------------- */
-    fn get_source(&self, x: &impl GetPosition) -> Box<str> {
+    fn get_source(&self, x: &impl GetPosition) -> Box<BStr> {
         let i = x.byte_start() - self.byte_offset;
         let j = x.byte_end() - self.byte_offset;
-        let bytes = self.source[i..=j].to_vec();
 
-        unsafe {
-            String::from_utf8_unchecked(bytes).into_boxed_str()
-        }
+        self.source[i..=j].to_vec().into_boxed_slice().into()
     }
 
     fn collect_whitespace(&mut self, mut stack: Vec<Token>) -> Vec<Token> {
@@ -1072,7 +1071,15 @@ impl<'a> IterativeParser<'a> {
         (stack, len)
     }
 
-    fn is_valid_macro_param(param: &str) -> bool {
+    fn is_valid_method(name: &BStr) -> bool {
+        HTTP_METHODS.iter().any(|x| x == name)
+    }
+
+    fn is_valid_decorator(name: &BStr) -> bool {
+        DECORATORS.iter().any(|x| x == name)
+    }
+
+    fn is_valid_macro_param(param: &BStr) -> bool {
         const ILLEGAL_NAMES: [&str; 22] = [
             "and", "break", "do", "else", "elseif", "end", "false", "for",
             "function", "goto", "if", "in", "local", "nil", "not", "or",
@@ -1080,15 +1087,15 @@ impl<'a> IterativeParser<'a> {
         ];
 
         !param.is_empty()
-            && !ILLEGAL_NAMES.contains(&param)
-            && !param.as_bytes()[0].is_ascii_digit()
-            && param.bytes().all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'))
+            && !ILLEGAL_NAMES.iter().any(|x| x == param)
+            && !param[0].is_ascii_digit()
+            && param.iter().all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'))
     }
 
-    fn is_valid_module_name(name: &str) -> bool {
-        name.split('/').all(|x| {
+    fn is_valid_module_name(name: &BStr) -> bool {
+        name.split(|&x| x == b'/').all(|x| {
             !x.is_empty()
-                && x.bytes().all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'A' | b'0'..=b'9' | b'-' | b'_'))
+                && x.iter().all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'A' | b'0'..=b'9' | b'-' | b'_'))
         })
     }
 }
@@ -1173,7 +1180,7 @@ impl<'a> LazyParser<'a> {
     fn next_top_node(&mut self) -> Option<(Rc<AstNode>, LazyNodeStatus)> {
         if let LazyParserState::Top(change_start, ref prev_node) = self.state {
             if let Some(old_node) = self.old_ast.front() {
-                let reference = old_node.source().as_bytes();
+                let reference = old_node.source();
 
                 if self.source[change_start..].starts_with(reference) {
                     if let LazyParserState::Top(change_start, prev_node) = &mut self.state {
@@ -1193,7 +1200,7 @@ impl<'a> LazyParser<'a> {
             let mut offset = self.old_ast.len();
 
             for old_node in self.old_ast.iter().rev() {
-                let reference = old_node.source().as_bytes();
+                let reference = old_node.source();
 
                 if !self.source[..change_end].ends_with(reference) {
                     break;

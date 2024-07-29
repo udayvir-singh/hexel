@@ -22,6 +22,10 @@
 //! assert_eq!(tokens[2].kind(), TokenKind::Identifier);
 //! ```
 
+use std::mem;
+
+use bstr::{BStr, ByteSlice};
+
 use crate::utils::{error::*, position::*, token::*};
 
 /* -------------------- *
@@ -645,20 +649,17 @@ impl<'a> Lexer<'a> {
         byte
     }
 
-    fn slice_source(&self, start: usize, end: usize) -> Box<str> {
-        let bytes = self.source[start..end].to_vec();
-
-        unsafe {
-            String::from_utf8_unchecked(bytes).into_boxed_str()
-        }
+    fn slice_source(&self, start: usize, end: usize) -> Box<BStr> {
+        self.source[start..end].to_vec().into_boxed_slice().into()
     }
 
-    fn is_valid_ascii_codepoint(codepoint: &str) -> bool {
-        u8::from_str_radix(codepoint, 10).is_ok_and(|x| x < 0x80)
+    fn is_valid_ascii_codepoint(codepoint: &BStr) -> bool {
+        u8::from_str_radix(unsafe { codepoint.to_str_unchecked() }, 10)
+            .is_ok_and(|x| x < 0x80)
     }
 
-    fn is_valid_unicode_codepoint(codepoint: &str) -> bool {
-        u32::from_str_radix(codepoint, 16)
+    fn is_valid_unicode_codepoint(codepoint: &BStr) -> bool {
+        u32::from_str_radix(unsafe { codepoint.to_str_unchecked() }, 16)
             .is_ok_and(|x| (x ^ 0xD800).wrapping_sub(0x800) < 0x110000 - 0x800)
     }
 }

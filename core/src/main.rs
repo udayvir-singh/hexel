@@ -18,7 +18,7 @@ use std::thread;
 use crate::lang::{lexer::*, parser::*};
 use crate::utils::{ast::*, consts::*, num::*, position::*, state::*, token::*, data::*};
 
-macro_rules! v {($($x:expr),* $(,)?) => {vec![$($x.to_string(),)*]}}
+macro_rules! v {($($x:expr),* $(,)?) => {vec![$($x.into(),)*]}}
 macro_rules! vr {($($x:expr),* $(,)?) => {&v![$($x,)*]}}
 
 // TODO: add module for data
@@ -27,25 +27,24 @@ macro_rules! vr {($($x:expr),* $(,)?) => {&v![$($x,)*]}}
 // request:seq request:method request:url request:version
 // script:dir script:name script:path
 
-use futures::future::join_all;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::task::JoinHandle;
+use bstr::{BString, ByteSlice, ByteVec};
 
 #[allow(unused)]
 #[tokio::main]
 async fn main() {
     println!("Hello, world!");
 
-    let json = Json::from_str("{\"a\": [1, 2]}").unwrap();
+    // let json = Json::from_str("{\"a\": [1, 2]}").unwrap();
 
-    println!("json = {:#?}",
-        json.get(&["a", "foo", "baz", "bar", "lol"])
-        .map(|x| x.to_string())
-    );
+    // println!("json = {:#?}",
+    //     json.get(&["a", "foo", "baz", "bar", "lol"])
+    //     .map(|x| x.to_string())
+    // );
 
     // println!("{}", STANDARD_FUNCTIONS.iter().map(|x| x.0).collect::<Vec<_>>().join("\n"));
 
-    // test_state();
+
+    test_state();
     // test_parser();
     // test_lazy_parser();
 }
@@ -63,26 +62,31 @@ fn test_state() {
         })
     );
 
-    state.set_string("foo".to_string(), "hello".to_string());
+    state.set_string("foo".into(), "hello".into());
 
     state.set_macro(
-        "lol".to_string(),
+        "lol".into(),
         v!["x", "*y"],
         "print('lol')
         return 0"
-            .to_string(),
+            .into(),
     );
 
     state.set_macro(
-        "test".to_string(),
+        "test".into(),
         v!["x", "*y"],
         "local n = n and n + 1 or 0
         print('n = ' .. n)
         return n"
-            .to_string(),
+            .into(),
     );
 
-    println!("r = {:#?}", state.eval("lol", vr!["0", "2"]));
+    println!("r = {:#?}", state.eval(
+        &"str:slice".into(),
+        vr!["a\u{AA}foo", "0", "3"]
+    )
+        // .map(|x| Vec::from(x))
+    );
 }
 
 /*

@@ -2,6 +2,8 @@
 
 use std::fmt::{self, Display};
 
+use bstr::BStr;
+
 use super::{error::*, position::*, token::*};
 
 /* -------------------- *
@@ -455,23 +457,23 @@ impl Display for Line {
 #[derive(Debug, Clone)]
 pub enum AstNode {
     /// A line node created by the parser.
-    Line(Line, Box<str>),
+    Line(Line, Box<BStr>),
     /// A statement node created by the parser.
-    Statement(Statement, Box<str>),
+    Statement(Statement, Box<BStr>),
     /// A request node created by the parser.
-    Request(Request, Box<str>),
+    Request(Request, Box<BStr>),
     /// A request component created by the parser.
-    RequestComponent(RequestComponent, Box<str>),
+    RequestComponent(RequestComponent, Box<BStr>),
 }
 
 impl AstNode {
     /// todo
-    pub fn source(&self) -> &str {
+    pub fn source(&self) -> &BStr {
         match self {
-            AstNode::Line(_, s) => s,
-            AstNode::Statement(_, s) => s,
-            AstNode::Request(_, s) => s,
-            AstNode::RequestComponent(_, s) => s,
+            AstNode::Line(_, s) => &s,
+            AstNode::Statement(_, s) => &s,
+            AstNode::Request(_, s) => &s,
+            AstNode::RequestComponent(_, s) => &s,
         }
     }
 }

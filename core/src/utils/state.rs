@@ -2,6 +2,7 @@
 
 use std::{mem, collections::HashMap, rc::Rc, str::FromStr, sync::RwLock};
 
+use bstr::{BStr, BString, ByteSlice};
 use mlua::{
     Error as LuaError,
     Lua,
@@ -24,17 +25,17 @@ use super::{consts::*, error::*, num::*};
 pub struct State {
     fileroot: String,
     printer: Box<dyn Fn(String)>,
-    data: RwLock<HashMap<String, StateValue>>,
+    data: RwLock<HashMap<BString, StateValue>>,
 }
 
 #[derive(Debug)]
 enum StateValue {
     String {
-        value: String,
+        value: BString,
     },
     Macro {
-        params: Vec<String>,
-        body: String,
+        params: Vec<BString>,
+        body: BString,
         lua: Rc<Lua>,
     },
 }
@@ -56,13 +57,13 @@ impl State {
 
     /// todo
     #[inline]
-    pub fn set_string(&self, identifier: String, value: String) {
-        self.data.write().unwrap().insert(identifier, StateValue::String {value});
+    pub fn set_string(&self, identifier: BString, value: BString) {
+        self.data.write().unwrap().insert(identifier, StateValue::String { value });
     }
 
     /// todo
     #[inline]
-    pub fn set_macro(&self, identifier: String, params: Vec<String>, body: String) {
+    pub fn set_macro(&self, identifier: BString, params: Vec<BString>, body: BString) {
         let value = StateValue::Macro {
             params,
             body,
@@ -73,11 +74,11 @@ impl State {
     }
 
     /// todo
-    pub fn merge(&self, other: Self, prefix: Option<&str>) {
+    pub fn merge(&self, other: Self, prefix: Option<&BString>) {
         let data = other.data.into_inner().unwrap();
 
         if let Some(p) = prefix {
-            let iter = data.into_iter().map(|(x, y)| (format!("{}:{}", p, x), y));
+            let iter = data.into_iter().map(|(x, y)| (Self::add_prefix(x, p), y));
 
             self.data.write().unwrap().extend(iter);
         } else {
@@ -86,10 +87,10 @@ impl State {
     }
 
     /// todo
-    pub fn take(&self, other: &Self, mut identifier: String, prefix: Option<&str>) -> Result<(), ()> {
+    pub fn take(&self, other: &Self, mut identifier: BString, prefix: Option<&BString>) -> Result<(), ()> {
         if let Some(value) = other.data.write().unwrap().remove(&identifier) {
             if let Some(p) = prefix {
-                identifier = format!("{}:{}", p, identifier);
+                identifier = Self::add_prefix(identifier, p);
             }
 
             self.data.write().unwrap().insert(identifier, value);
@@ -102,9 +103,9 @@ impl State {
     /// todo
     pub fn eval(
         &self,
-        identifier: &str,
-        args: &[String],
-    ) -> Result<String, (ErrorCode, Option<String>)> {
+        identifier: &BString,
+        args: &[BString],
+    ) -> Result<BString, (ErrorCode, Option<String>)> {
         // early return if identifier name is invalid
         if !Self::is_identifier_name(identifier) {
             return Err((ErrorCode::CC01, None));
@@ -124,7 +125,7 @@ impl State {
             }
             // evaluate lua macro
             Some(StateValue::Macro { params, body, lua })
-                if args.len() >= params.iter().filter(|x| !x.starts_with('*')).count() =>
+                if args.len() >= params.iter().filter(|x| x[0] != b'*').count() =>
             {
                 let body = body.clone();
                 let lua = lua.clone();
@@ -142,9 +143,9 @@ impl State {
 
                     Self::inject_state_api(&lua, scope, printer, data)?;
 
-                    lua.load(body)
+                    lua.load(body.as_bytes())
                         .set_name(format!("[macro {}]", identifier))
-                        .eval::<String>()
+                        .call::<_, BString>(())
                 }).map_err(|err| {
                     let mut desc = format!("lua {}", err);
 
@@ -159,8 +160,8 @@ impl State {
             Some(StateValue::Macro { params, .. }) => {
                 let missing_args = params[args.len()..]
                     .iter()
-                    .filter(|x| !x.starts_with('*'))
-                    .map(|x| format!("{:?}", x.strip_prefix('+').unwrap_or(x)))
+                    .filter(|x| x[0] != b'*')
+                    .map(|x| format!("{:?}", x.strip_prefix(&[b'+']).unwrap_or(x).as_bstr()))
                     .collect::<Vec<String>>();
 
                 let desc = format!(
@@ -207,8 +208,8 @@ impl State {
     /* -------------------- *
      *         UTILS        *
      * -------------------- */
-    fn is_atom(x: &str) -> bool {
-        !x.is_empty() && !x.bytes().any(|byte| {
+    fn is_atom(x: &[u8]) -> bool {
+        !x.is_empty() && !x.iter().any(|byte| {
             matches!(
                 byte,
                 b'\0'..=b'\x1F' | b'\x7F' | b' ' | b'\\' | b'\'' | b'"' |
@@ -217,8 +218,18 @@ impl State {
         })
     }
 
-    fn is_identifier_name(x: &str) -> bool {
-        x.split(':').all(Self::is_atom)
+    fn is_identifier_name(x: &[u8]) -> bool {
+        x.split(|&x| x == b':').all(Self::is_atom)
+    }
+
+    fn add_prefix(mut identifier: BString, prefix: &BString) -> BString {
+        let mut bytes = Vec::with_capacity(prefix.len() + 1 + identifier.len());
+
+        bytes.extend_from_slice(prefix);
+        bytes.push(b':');
+        bytes.append(&mut identifier);
+
+        BString::new(bytes)
     }
 
     fn debug_lua_sequence(table: LuaTable, max_width: usize) -> String {
@@ -248,22 +259,21 @@ impl State {
         string
     }
 
-    fn parse_lua_identifer(identifier: LuaValue, err_heading: &str) -> LuaResult<String> {
+    fn parse_lua_identifer(identifier: LuaValue, err_heading: &str) -> LuaResult<BString> {
         let parse_string = |string: &LuaString| {
-            match string.to_str() {
-                Ok(xs) if Self::is_identifier_name(xs) => {
-                    Ok(xs.to_string())
-                }
-                _ => {
-                    Err(())
-                }
+            let bytes = string.as_bytes();
+
+            if Self::is_identifier_name(bytes) {
+                Ok(bytes.into())
+            } else {
+                Err(())
             }
         };
 
         let parse_table = |table: LuaTable| {
             let mut vec = Vec::new();
 
-            for value in table.sequence_values::<String>() {
+            for value in table.sequence_values::<BString>() {
                 match value {
                     Ok(xs) if Self::is_atom(&xs) => {
                         vec.push(xs);
@@ -275,7 +285,7 @@ impl State {
             }
 
             if vec.len() > 0 {
-                Ok(vec.join(":"))
+                Ok(bstr::join(":", vec).into())
             } else {
                 Err(())
             }
@@ -322,8 +332,8 @@ impl State {
      * -------------------- */
     fn set_macro_args(
         lua: &Lua,
-        params: &[String],
-        args: &[String],
+        params: &[BString],
+        args: &[BString],
     ) -> LuaResult<()> {
         let globals = lua.globals();
 
@@ -331,14 +341,14 @@ impl State {
         let mut idx = 0;
 
         for param in params {
-            if let b'*' | b'+' = param.as_bytes()[0] {
+            if let b'*' | b'+' = param[0] {
                 let range_end = args.len() - (params.len() - 1 - idx);
 
                 globals.set(&param[1..], &args[idx..range_end])?;
 
                 idx = range_end;
             } else {
-                globals.set(param.as_str(), args[idx].as_str())?;
+                globals.set(param.as_bstr(), args[idx].as_bstr())?;
 
                 idx += 1;
             }
@@ -351,7 +361,7 @@ impl State {
         lua: &Lua,
         scope: &LuaScope,
         printer: &'static dyn Fn(String),
-        data: &'static RwLock<HashMap<String, StateValue>>,
+        data: &'static RwLock<HashMap<BString, StateValue>>,
     ) -> LuaResult<()> {
         let globals = lua.globals();
 
@@ -388,24 +398,24 @@ impl State {
                     let macro_lua = macro_lua.clone();
 
                     // create macro wrapper
-                    let lua_func = lua.create_function(move |_, args: LuaVariadic<String>| {
-                        if args.len() >= params.iter().filter(|x| !x.starts_with('*')).count() {
+                    let lua_func = lua.create_function(move |_, args: LuaVariadic<BString>| {
+                        if args.len() >= params.iter().filter(|x| x[0] != b'*').count() {
                             // evaluate macro
                             macro_lua.scope(|macro_scope| {
                                 Self::set_macro_args(&macro_lua, &params, &args)?;
                                 Self::inject_state_api(&macro_lua, macro_scope, printer, data)?;
 
                                 macro_lua
-                                    .load(&body)
+                                    .load(body.as_bytes())
                                     .set_name(format!("[macro {}]", identifier))
-                                    .eval::<String>()
+                                    .call::<_, String>(())
                             })
                         } else {
                             // handle missing arguments
                             let missing_args = params[args.len()..]
                                 .iter()
-                                .filter(|x| !x.starts_with('*'))
-                                .map(|x| format!("{:?}", x.strip_prefix('+').unwrap_or(x)))
+                                .filter(|x| x[0] != b'*')
+                                .map(|x| format!("{:?}", x.strip_prefix(&[b'+']).unwrap_or(x).as_bstr()))
                                 .collect::<Vec<String>>();
 
                             let msg = format!(
@@ -428,7 +438,7 @@ impl State {
                 None => match STANDARD_FUNCTIONS.iter().find(|x| x.0 == identifier) {
                     // add lua wrapper around standard function
                     Some((_, params, func)) => {
-                        let lua_func = lua.create_function(move |_, args: LuaVariadic<String>| {
+                        let lua_func = lua.create_function(move |_, args: LuaVariadic<BString>| {
                             if args.len() >= params.len() {
                                 // call function
                                 func(&args).map_err(|err| {
@@ -475,7 +485,7 @@ impl State {
         globals.set("get", get)?;
 
         // inject state setter
-        let set = scope.create_function(|_, (identifier, value): (LuaValue, String)| {
+        let set = scope.create_function(|_, (identifier, value): (LuaValue, BString)| {
             let err_heading = "Invalid argument to 'set' function";
             let identifier = Self::parse_lua_identifer(identifier, err_heading)?;
 
@@ -607,7 +617,7 @@ macro_rules! standard_functions {
         /// - The function's parameters.
         /// - The function itself.
         pub static STANDARD_FUNCTIONS: [
-            (&str, &[&str], fn(args: &[String]) -> Result<String, String>);
+            (&str, &[&str], fn(args: &[BString]) -> Result<BString, String>);
             count!($($id)*)
         ] = [
             $(($id, &[$(stringify!($arg),)*], $fn),)*
@@ -622,31 +632,31 @@ standard_functions! {
     "bool:not" => (boolean) = |args| {
         let boolean = parse_boolean(&args[0], "boolean")?;
 
-        Ok((!boolean).to_string())
+        Ok((!boolean).to_bstring())
     }
 
     "bool:and" => (boolean1, boolean2) = |args| {
         let booleans = parse_booleans(args, "boolean")?;
 
-        Ok(booleans.into_iter().all(|x| x).to_string())
+        Ok(booleans.into_iter().all(|x| x).to_bstring())
     }
 
     "bool:or" => (boolean1, boolean2) = |args| {
         let booleans = parse_booleans(args, "boolean")?;
 
-        Ok(booleans.into_iter().any(|x| x).to_string())
+        Ok(booleans.into_iter().any(|x| x).to_bstring())
     }
 
     "bool:nand" => (boolean1, boolean2) = |args| {
         let booleans = parse_booleans(args, "boolean")?;
 
-        Ok((!booleans.into_iter().all(|x| x)).to_string())
+        Ok((!booleans.into_iter().all(|x| x)).to_bstring())
     }
 
     "bool:nor" => (boolean1, boolean2) = |args| {
         let booleans = parse_booleans(args, "boolean")?;
 
-        Ok((!booleans.into_iter().any(|x| x)).to_string())
+        Ok((!booleans.into_iter().any(|x| x)).to_bstring())
     }
 
 
@@ -656,138 +666,106 @@ standard_functions! {
     "str:empty?" => (string) = |args| {
         let string = &args[0];
 
-        Ok(string.is_empty().to_string())
+        Ok(string.is_empty().to_bstring())
     }
 
     "str:eq?" => (string1, string2) = |args| {
-        Ok(args.windows(2).all(|x| x[0] == x[1]).to_string())
+        Ok(args.windows(2).all(|x| x[0] == x[1]).to_bstring())
     }
 
     "str:lt?" => (string1, string2) = |args| {
-        Ok(args.windows(2).all(|x| x[0] < x[1]).to_string())
+        Ok(args.windows(2).all(|x| x[0] < x[1]).to_bstring())
     }
 
     "str:le?" => (string1, string2) = |args| {
-        Ok(args.windows(2).all(|x| x[0] <= x[1]).to_string())
+        Ok(args.windows(2).all(|x| x[0] <= x[1]).to_bstring())
     }
 
     "str:gt?" => (string1, string2) = |args| {
-        Ok(args.windows(2).all(|x| x[0] > x[1]).to_string())
+        Ok(args.windows(2).all(|x| x[0] > x[1]).to_bstring())
     }
 
     "str:ge?" => (string1, string2) = |args| {
-        Ok(args.windows(2).all(|x| x[0] >= x[1]).to_string())
+        Ok(args.windows(2).all(|x| x[0] >= x[1]).to_bstring())
     }
 
     "str:oneof?" => (string, pattern) = |args| {
         let string = &args[0];
         let patterns = &args[1..];
 
-        Ok(patterns.iter().any(|x| x == string).to_string())
+        Ok(patterns.iter().any(|x| x == string).to_bstring())
     }
 
     "str:prefix?" => (string, pattern) = |args| {
         let string = &args[0];
         let patterns = &args[1..];
 
-        Ok(patterns.iter().any(|x| string.starts_with(x)).to_string())
+        Ok(patterns.iter().any(|x| string.starts_with(x)).to_bstring())
     }
 
     "str:suffix?" => (string, pattern) = |args| {
         let string = &args[0];
         let patterns = &args[1..];
 
-        Ok(patterns.iter().any(|x| string.ends_with(x)).to_string())
+        Ok(patterns.iter().any(|x| string.ends_with(x)).to_bstring())
     }
 
     "str:len" => (string) = |args| {
         let string = &args[0];
 
-        Ok(string.chars().count().to_string())
+        Ok(string.chars().count().to_bstring())
     }
 
     "str:blen" => (string) = |args| {
         let string = &args[0];
 
-        Ok(string.len().to_string())
+        Ok(string.len().to_bstring())
     }
 
     "str:upper" => (string) = |args| {
         let string = &args[0];
 
-        Ok(string.to_uppercase())
+        Ok(string.to_uppercase().into())
     }
 
     "str:lower" => (string) = |args| {
         let string = &args[0];
 
-        Ok(string.to_lowercase())
+        Ok(string.to_lowercase().into())
     }
 
     "str:concat" => (string1, string2) = |args| {
-        Ok(args.concat())
+        Ok(args.concat().into())
     }
 
     "str:join" => (separator, string1, string2) = |args| {
         let separator = &args[0];
         let strings = &args[1..];
 
-        Ok(strings.join(separator))
+        Ok(bstr::join(separator, strings).into())
     }
 
     "str:repeat" => (string, count) = |args| {
         let string = &args[0];
         let count = parse_clamped_integer(&args[1], "count")?;
 
-        Ok(string.repeat(count.max(0) as usize))
+        Ok(string.repeat(count.max(0) as usize).into())
     }
 
     "str:pick" => (string1, string2) = |args| {
         Ok(args.iter().find(|x| !x.is_empty()).cloned().unwrap_or_default())
     }
 
-    "str:min" => (string1, string2) = |args| {
-        Ok(extract(args, |x, y| x < y))
-    }
-
-    "str:pmin" => (string1, string2) = |args| {
-        Ok(extract_non_empty(args, |x, y| x < y))
-    }
-
-    "str:rmin" => (string1, string2) = |args| {
-        Ok(extract(args, |x, y| x <= y))
-    }
-
-    "str:rpmin" => (string1, string2) = |args| {
-        Ok(extract_non_empty(args, |x, y| x <= y))
-    }
-
-    "str:max" => (string1, string2) = |args| {
-        Ok(extract(args, |x, y| x > y))
-    }
-
-    "str:pmax" => (string1, string2) = |args| {
-        Ok(extract_non_empty(args, |x, y| x > y))
-    }
-
-    "str:rmax" => (string1, string2) = |args| {
-        Ok(extract(args, |x, y| x >= y))
-    }
-
-    "str:rpmax" => (string1, string2) = |args| {
-        Ok(extract_non_empty(args, |x, y| x >= y))
-    }
-
     "str:slice" => (string, start) = |args| {
         let string = &args[0];
-        let start = parse_index(string, &args[1], "end")?;
+        let start = parse_index(&args[1], string.len(), "end")?;
         let end = if let Some(arg) = args.get(2) {
-            parse_index(string, arg, "end")?
+            parse_index(arg, string.len(),"end")?
         } else {
             usize::MAX
         };
 
-        Ok(string.chars().skip(start).take(end.saturating_sub(start)).collect())
+        Ok(slice(string, start, end))
     }
 
     "str:replace" => (string, pattern, replacement) = |args| {
@@ -800,28 +778,28 @@ standard_functions! {
             usize::MAX
         };
 
-        Ok(string.replacen(pattern, replacement, count).to_string())
+        Ok(string.replacen(pattern, replacement, count).into())
     }
 
     "str:trim-start" => (string) = |args| {
         let string = &args[0];
         let patterns = &args[1..];
 
-        Ok(trim_start(string, patterns).to_string())
+        Ok(trim_start(string.as_bstr(), patterns).into())
     }
 
     "str:trim-end" => (string) = |args| {
         let string = &args[0];
         let patterns = &args[1..];
 
-        Ok(trim_end(string, patterns).to_string())
+        Ok(trim_end(string.as_bstr(), patterns).into())
     }
 
     "str:trim" => (string) = |args| {
         let string = &args[0];
         let patterns = &args[1..];
 
-        Ok(trim(string, patterns).to_string())
+        Ok(trim(string.as_bstr(), patterns).into())
     }
 
 
@@ -843,80 +821,80 @@ standard_functions! {
     "math:pos?" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok(number.is_positive().to_string())
+        Ok(number.is_positive().to_bstring())
     }
 
     "math:neg?" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok(number.is_negative().to_string())
+        Ok(number.is_negative().to_bstring())
     }
 
     "math:int?" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok(number.is_integer().to_string())
+        Ok(number.is_integer().to_bstring())
     }
 
     "math:zero?" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok(number.is_zero().to_string())
+        Ok(number.is_zero().to_bstring())
     }
 
     "math:one?" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok(number.is_one().to_string())
+        Ok(number.is_one().to_bstring())
     }
 
     "math:eq?" => (number1, number2) = |args| {
         let numbers = parse_numbers(args, "number")?;
 
-        Ok(numbers.windows(2).all(|x| x[0] == x[1]).to_string())
+        Ok(numbers.windows(2).all(|x| x[0] == x[1]).to_bstring())
     }
 
     "math:lt?" => (number1, number2) = |args| {
         let numbers = parse_numbers(args, "number")?;
 
-        Ok(numbers.windows(2).all(|x| x[0] < x[1]).to_string())
+        Ok(numbers.windows(2).all(|x| x[0] < x[1]).to_bstring())
     }
 
     "math:le?" => (number1, number2) = |args| {
         let numbers = parse_numbers(args, "number")?;
 
-        Ok(numbers.windows(2).all(|x| x[0] <= x[1]).to_string())
+        Ok(numbers.windows(2).all(|x| x[0] <= x[1]).to_bstring())
     }
 
     "math:gt?" => (number1, number2) = |args| {
         let numbers = parse_numbers(args, "number")?;
 
-        Ok(numbers.windows(2).all(|x| x[0] > x[1]).to_string())
+        Ok(numbers.windows(2).all(|x| x[0] > x[1]).to_bstring())
     }
 
     "math:ge?" => (number1, number2) = |args| {
         let numbers = parse_numbers(args, "number")?;
 
-        Ok(numbers.windows(2).all(|x| x[0] >= x[1]).to_string())
+        Ok(numbers.windows(2).all(|x| x[0] >= x[1]).to_bstring())
     }
 
     "math:oneof?" => (number, pattern) = |args| {
         let number = parse_number(&args[0], "number")?;
         let patterns = parse_numbers(&args[1..], "pattern")?;
 
-        Ok(patterns.into_iter().any(|x| x == number).to_string())
+        Ok(patterns.into_iter().any(|x| x == number).to_bstring())
     }
 
     "math:min" => (number1, number2) = |args| {
         let numbers = parse_numbers(args, "number")?;
 
-        Ok(numbers.into_iter().reduce(Number::min).unwrap().to_string())
+        Ok(numbers.into_iter().reduce(Number::min).unwrap().to_bstring())
     }
 
     "math:max" => (number1, number2) = |args| {
         let numbers = parse_numbers(args, "number")?;
 
-        Ok(numbers.into_iter().reduce(Number::max).unwrap().to_string())
+        Ok(numbers.into_iter().reduce(Number::max).unwrap().to_bstring())
     }
 
     "math:clamp" => (number, min, max) = |args| {
@@ -924,43 +902,43 @@ standard_functions! {
         let min = parse_number(&args[1], "min")?;
         let max = parse_number(&args[2], "max")?;
 
-        Ok(number.clamp(min, max).to_string())
+        Ok(number.clamp(min, max).to_bstring())
     }
 
     "math:neg" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok((-number).to_string())
+        Ok((-number).to_bstring())
     }
 
     "math:abs" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok(number.abs().to_string())
+        Ok(number.abs().to_bstring())
     }
 
     "math:signum" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok(number.signum().to_string())
+        Ok(number.signum().to_bstring())
     }
 
     "math:floor" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok(number.floor().to_string())
+        Ok(number.floor().to_bstring())
     }
 
     "math:ceil" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok(number.ceil().to_string())
+        Ok(number.ceil().to_bstring())
     }
 
     "math:round" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
         let scale = parse_scale(args.get(1), DEFAULT_NORMAL_MATH_SCALE)?;
-        let mode = match args.get(2).map(String::as_str).unwrap_or("half-up") {
+        let mode = match args.get(2).map(|x| unsafe { x.to_str_unchecked() }).unwrap_or("half-up") {
             "up" => RoundingMode::Up,
             "down" => RoundingMode::Down,
             "floor" => RoundingMode::Floor,
@@ -975,37 +953,37 @@ standard_functions! {
             }
         };
 
-        Ok(number.round(scale, mode).to_string())
+        Ok(number.round(scale, mode).to_bstring())
     }
 
     "math:add" => (number1, number2) = |args| {
         let numbers = parse_numbers(args, "number")?;
 
-        Ok(numbers.into_iter().reduce(|x, y| x + y).unwrap().to_string())
+        Ok(numbers.into_iter().reduce(|x, y| x + y).unwrap().to_bstring())
     }
 
     "math:sub" => (number1, number2) = |args| {
         let numbers = parse_numbers(args, "number")?;
 
-        Ok(numbers.into_iter().reduce(|x, y| x - y).unwrap().to_string())
+        Ok(numbers.into_iter().reduce(|x, y| x - y).unwrap().to_bstring())
     }
 
     "math:mul" => (number1, number2) = |args| {
         let numbers = parse_numbers(args, "number")?;
 
-        Ok(numbers.into_iter().reduce(|x, y| x * y).unwrap().to_string())
+        Ok(numbers.into_iter().reduce(|x, y| x * y).unwrap().to_bstring())
     }
 
     "math:rem" => (number1, number2) = |args| {
         let numbers = parse_div_numbers(args, "number")?;
 
-        Ok(numbers.into_iter().reduce(|x, y| x % y).unwrap().to_string())
+        Ok(numbers.into_iter().reduce(|x, y| x % y).unwrap().to_bstring())
     }
 
     "math:div" => (number1, number2) = |args| {
         let numbers = parse_div_numbers(args, "number")?;
 
-        Ok(numbers.into_iter().reduce(|x, y| x / y).unwrap().to_string())
+        Ok(numbers.into_iter().reduce(|x, y| x / y).unwrap().to_bstring())
     }
 
     "math:xdiv" => (scale, number1, number2) = |args| {
@@ -1017,7 +995,7 @@ standard_functions! {
                 .into_iter()
                 .reduce(|x, y| x.div_with_scale(y, scale).unwrap())
                 .unwrap()
-                .to_string()
+                .to_bstring()
         )
     }
 
@@ -1029,7 +1007,7 @@ standard_functions! {
                 .into_iter()
                 .reduce(|x, y| x.pow(y, DEFAULT_HARD_MATH_SCALE))
                 .unwrap()
-                .to_string()
+                .to_bstring()
         )
     }
 
@@ -1042,7 +1020,7 @@ standard_functions! {
                 .into_iter()
                 .reduce(|x, y| x.pow(y, scale))
                 .unwrap()
-                .to_string()
+                .to_bstring()
         )
     }
 
@@ -1052,7 +1030,7 @@ standard_functions! {
 
         number
             .inverse(scale)
-            .map(|x| x.to_string())
+            .map(|x| x.to_bstring())
             .ok_or_else(|| arg_error(
                 "number",
                 "Cannot calculate inverse of zero".to_string(),
@@ -1062,19 +1040,19 @@ standard_functions! {
     "math:inc" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok((number + Number::one()).to_string())
+        Ok((number + Number::one()).to_bstring())
     }
 
     "math:dec" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok((number - Number::one()).to_string())
+        Ok((number - Number::one()).to_bstring())
     }
 
     "math:square" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok(number.square().to_string())
+        Ok(number.square().to_bstring())
     }
 
     "math:sqrt" => (number) = |args| {
@@ -1083,7 +1061,7 @@ standard_functions! {
 
         number
             .sqrt(scale)
-            .map(|x| x.to_string())
+            .map(|x| x.to_bstring())
             .ok_or_else(|| arg_error(
                 "number",
                 format!("Cannot calculate sqrt of negative number: {:?}", &args[0]),
@@ -1093,28 +1071,28 @@ standard_functions! {
     "math:cube" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
 
-        Ok(number.cube().to_string())
+        Ok(number.cube().to_bstring())
     }
 
     "math:cbrt" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
         let scale = parse_scale(args.get(1), DEFAULT_NORMAL_MATH_SCALE)?;
 
-        Ok(number.cbrt(scale).to_string())
+        Ok(number.cbrt(scale).to_bstring())
     }
 
     "math:exp" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
         let scale = parse_scale(args.get(1), DEFAULT_HARD_MATH_SCALE)?;
 
-        Ok(number.exp(scale).to_string())
+        Ok(number.exp(scale).to_bstring())
     }
 
     "math:ln" => (number) = |args| {
         let number = parse_number(&args[0], "number")?;
         let scale = parse_scale(args.get(1), DEFAULT_HARD_MATH_SCALE)?;
 
-        number.ln(scale).map(|x| x.to_string())
+        number.ln(scale).map(|x| x.to_bstring())
     }
 
     "math:log" => (number, base) = |args| {
@@ -1122,35 +1100,35 @@ standard_functions! {
         let base = parse_number(&args[1], "number")?;
         let scale = parse_scale(args.get(2), DEFAULT_HARD_MATH_SCALE)?;
 
-        number.log(base, scale).map(|x| x.to_string())
+        number.log(base, scale).map(|x| x.to_bstring())
     }
 
     "math:rad" => (degrees) = |args| {
         let degrees = parse_number(&args[0], "degrees")?;
         let scale = parse_scale(args.get(1), DEFAULT_NORMAL_MATH_SCALE)?;
 
-        Ok(degrees.rad(scale).to_string())
+        Ok(degrees.rad(scale).to_bstring())
     }
 
     "math:deg" => (radians) = |args| {
         let radians = parse_number(&args[0], "radians")?;
         let scale = parse_scale(args.get(1), DEFAULT_NORMAL_MATH_SCALE)?;
 
-        Ok(radians.deg(scale).to_string())
+        Ok(radians.deg(scale).to_bstring())
     }
 
     "math:sin" => (radians) = |args| {
         let radians = parse_number(&args[0], "radians")?;
         let scale = parse_scale(args.get(1), DEFAULT_HARD_MATH_SCALE)?;
 
-        Ok(radians.sin(scale).to_string())
+        Ok(radians.sin(scale).to_bstring())
     }
 
     "math:cos" => (radians) = |args| {
         let radians = parse_number(&args[0], "radians")?;
         let scale = parse_scale(args.get(1), DEFAULT_HARD_MATH_SCALE)?;
 
-        Ok(radians.cos(scale).to_string())
+        Ok(radians.cos(scale).to_bstring())
     }
 
     "math:tan" => (radians) = |args| {
@@ -1159,7 +1137,7 @@ standard_functions! {
 
         radians
             .tan(scale)
-            .map(|x| x.to_string())
+            .map(|x| x.to_bstring())
             .ok_or_else(|| format!(
                 "Tangent is not defined at pi/2 + n*pi: {:?}",
                 &args[0],
@@ -1170,35 +1148,24 @@ standard_functions! {
         let lbound = parse_number(&args[0], "lbound")?;
         let rbound = parse_number(&args[1], "rbound")?;
 
-        lbound.random(&rbound).map(|x| x.to_string())
+        lbound.random(&rbound).map(|x| x.to_bstring())
     }
-
-
-    /* -------------------- *
-     *         UUID         *
-     * -------------------- */
-    /* -------------------- *
-     *         JSON         *
-     * -------------------- */
-    /* -------------------- *
-     *         JSON5        *
-     * -------------------- */
-    /* -------------------- *
-     *         YAML         *
-     * -------------------- */
-    /* -------------------- *
-     *         FORM         *
-     * -------------------- */
-
 }
 
 
 /* -------------------- *
  *         UTILS        *
  * -------------------- */
-#[allow(unused)]
-pub(crate) fn test(args: &[String]) -> Result<String, String> {
-    todo!()
+trait ToBString {
+    #[must_use]
+    fn to_bstring(&self) -> BString;
+}
+
+impl<T: ToString> ToBString for T {
+    #[inline]
+    fn to_bstring(&self) -> BString {
+        self.to_string().into()
+    }
 }
 
 fn arg_error(arg_name: &str, msg: String) -> String {
@@ -1209,8 +1176,8 @@ fn arg_error(arg_name: &str, msg: String) -> String {
 /* -------------------- *
  *     BOOLEAN UTILS    *
  * -------------------- */
-fn parse_boolean(arg: &str, arg_name: &str) -> Result<bool, String> {
-    match arg {
+fn parse_boolean(arg: &BString, arg_name: &str) -> Result<bool, String> {
+    match unsafe { arg.to_str_unchecked() } {
         "true" => Ok(true),
         "false" => Ok(false),
         _ => Err(arg_error(
@@ -1220,7 +1187,7 @@ fn parse_boolean(arg: &str, arg_name: &str) -> Result<bool, String> {
     }
 }
 
-fn parse_booleans(args: &[String], basename: &str) -> Result<Vec<bool>, String> {
+fn parse_booleans(args: &[BString], basename: &str) -> Result<Vec<bool>, String> {
     let mut booleans = Vec::with_capacity(args.len());
 
     for (arg, n) in args.iter().zip(1..) {
@@ -1234,75 +1201,82 @@ fn parse_booleans(args: &[String], basename: &str) -> Result<Vec<bool>, String> 
 /* -------------------- *
  *     STRING UTILS     *
  * -------------------- */
-fn extract(args: &[String], cond: fn(usize, usize) -> bool) -> String {
-    args
-        .iter()
-        .reduce(|y, x| if cond(x.len(), y.len()) { x } else { y })
-        .unwrap()
-        .clone()
-}
-
-fn extract_non_empty(args: &[String], cond: fn(usize, usize) -> bool) -> String {
-    args
-        .iter()
-        .filter(|x| !x.is_empty())
-        .reduce(|y, x| if cond(x.len(), y.len()) { x } else { y })
-        .cloned()
-        .unwrap_or_default()
-}
-
-fn trim_start<'a>(mut string: &'a str, patterns: &[String]) -> &'a str {
+fn trim_start<'a>(mut string: &'a BStr, patterns: &[BString]) -> &'a BStr {
     if patterns.is_empty() {
-        return string.trim_start();
+        return string.trim_start().as_bstr();
     }
 
-    while let Some(xs) = patterns.iter().find_map(|p| string.strip_prefix(p)) {
-        string = xs;
+    while let Some(xs) = patterns
+        .iter()
+        .find_map(|p| string.strip_prefix(p.as_bytes()))
+    {
+        string = xs.as_bstr();
     }
 
     string
 }
 
-fn trim_end<'a>(mut string: &'a str, patterns: &[String]) -> &'a str {
+fn trim_end<'a>(mut string: &'a BStr, patterns: &[BString]) -> &'a BStr {
     if patterns.is_empty() {
-        return string.trim_end();
+        return string.trim_end().as_bstr();
     }
 
-    while let Some(xs) = patterns.iter().find_map(|p| string.strip_suffix(p)) {
-        string = xs;
+    while let Some(xs) = patterns
+        .iter()
+        .find_map(|p| string.strip_suffix(p.as_bytes()))
+    {
+        string = xs.as_bstr();
     }
 
     string
 }
 
-fn trim<'a>(string: &'a str, patterns: &[String]) -> &'a str {
+fn trim<'a>(string: &'a BStr, patterns: &[BString]) -> &'a BStr {
     trim_start(trim_end(string, patterns), patterns)
+}
+
+fn slice(string: &BString, start: usize, end: usize) -> BString {
+    if start >= end {
+        return BString::default();
+    }
+
+    let mut iter = string.char_indices();
+    let idx = iter
+        .nth(start)
+        .map(|x| x.0)
+        .unwrap_or(string.len());
+    let jdx = iter
+        .nth(end.saturating_sub(start + 1))
+        .map(|x| x.0)
+        .unwrap_or(string.len());
+
+    string.get(idx..jdx).unwrap_or_default().into()
 }
 
 
 /* -------------------- *
  *     NUMBER UTILS     *
  * -------------------- */
-fn parse_constant(raw: &str, scale: i64) -> String {
+fn parse_constant(raw: &str, scale: i64) -> BString {
     let int_digits = raw.bytes().take_while(|x| *x != b'.').count();
 
     if scale <= -(int_digits as i64) {
-        "0".to_string()
+        "0".into()
     } else if scale < 0 {
         [
             &raw[..int_digits - scale.abs() as usize],
             "0".repeat(scale.abs() as usize).as_str(),
-        ].concat()
+        ].concat().into()
     } else {
-        raw[..(int_digits + (scale.min(1) + scale) as usize).min(raw.len())].to_string()
+        raw[..(int_digits + (scale.min(1) + scale) as usize).min(raw.len())].into()
     }
 }
 
-fn parse_number(arg: &str, arg_name: &str) -> Result<Number, String> {
-    Number::from_str(arg).map_err(|err| arg_error(arg_name, err))
+fn parse_number(arg: &BString, arg_name: &str) -> Result<Number, String> {
+    Number::from_bytes(arg).map_err(|err| arg_error(arg_name, err))
 }
 
-fn parse_numbers(args: &[String], basename: &str) -> Result<Vec<Number>, String> {
+fn parse_numbers(args: &[BString], basename: &str) -> Result<Vec<Number>, String> {
     let mut numbers = Vec::with_capacity(args.len());
 
     for (arg, n) in args.iter().zip(1..) {
@@ -1312,7 +1286,7 @@ fn parse_numbers(args: &[String], basename: &str) -> Result<Vec<Number>, String>
     Ok(numbers)
 }
 
-fn parse_div_numbers(args: &[String], basename: &str) -> Result<Vec<Number>, String> {
+fn parse_div_numbers(args: &[BString], basename: &str) -> Result<Vec<Number>, String> {
     let mut numbers = Vec::with_capacity(args.len());
 
     for (arg, n) in args.iter().zip(1..) {
@@ -1329,29 +1303,29 @@ fn parse_div_numbers(args: &[String], basename: &str) -> Result<Vec<Number>, Str
     Ok(numbers)
 }
 
-fn parse_integer(arg: &str, arg_name: &str) -> Result<i64, String> {
-    Number::from_str(arg)
+fn parse_integer(arg: &BString, arg_name: &str) -> Result<i64, String> {
+    Number::from_bytes(arg)
         .and_then(|x| x.to_integer())
         .map_err(|err| arg_error(arg_name, err))
 }
 
-fn parse_clamped_integer(arg: &str, arg_name: &str) -> Result<i64, String> {
-    Number::from_str(arg)
+fn parse_clamped_integer(arg: &BString, arg_name: &str) -> Result<i64, String> {
+    Number::from_bytes(arg)
         .and_then(|x| x.to_clamped_integer())
         .map_err(|err| arg_error(arg_name, err))
 }
 
-fn parse_index(string: &str, arg: &str, arg_name: &str) -> Result<usize, String> {
+fn parse_index(arg: &BString, len: usize, arg_name: &str) -> Result<usize, String> {
     let int = parse_clamped_integer(arg, arg_name)?;
 
     if int.is_negative() {
-        Ok(string.len().saturating_sub(int.abs() as usize))
+        Ok(len.saturating_sub(int.abs() as usize))
     } else {
         Ok(int as usize)
     }
 }
 
-fn parse_scale(scale: Option<&String>, default: i64) -> Result<i64, String> {
+fn parse_scale(scale: Option<&BString>, default: i64) -> Result<i64, String> {
     scale
         .map(|x| parse_integer(x, "scale"))
         .transpose()

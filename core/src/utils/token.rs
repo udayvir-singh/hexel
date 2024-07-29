@@ -1,5 +1,7 @@
 //! todo
 
+use bstr::BStr;
+
 use std::{
     fmt::{self, Display},
     ops::Range,
@@ -81,7 +83,7 @@ pub struct Terminal {
     /// The name of the terminal token.
     pub name: TokenName,
     /// The raw string value associated with the token.
-    pub value: BString,
+    pub value: Box<BStr>,
     /// The position in the source code where this token was created.
     pub position: Position,
 }
@@ -90,7 +92,7 @@ impl Terminal {
     /// Creates a new [`Terminal`] token.
     #[inline]
     #[must_use]
-    pub fn new(kind: TokenKind, name: TokenName, value: Box<str>, position: Position) -> Self {
+    pub fn new(kind: TokenKind, name: TokenName, value: Box<BStr>, position: Position) -> Self {
         Self { kind, name, value, position }
     }
 }
@@ -253,7 +255,7 @@ impl Token {
     /// Creates a new terminal [`Token`].
     #[inline]
     #[must_use]
-    pub fn new_terminal(kind: TokenKind, name: TokenName, value: Box<str>, position: Position) -> Self {
+    pub fn new_terminal(kind: TokenKind, name: TokenName, value: Box<BStr>, position: Position) -> Self {
         Self::Terminal(Terminal::new(kind, name, value, position))
     }
 
@@ -298,7 +300,7 @@ impl Token {
     /// Panics if called on a compound token.
     #[inline]
     #[must_use]
-    pub fn value(&self) -> &str {
+    pub fn value(&self) -> &BStr {
         match self {
             Token::Terminal(x) => &x.value,
             Token::Compound(_) => panic!("Unable to get string value from a compound token."),
