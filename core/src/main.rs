@@ -1,8 +1,10 @@
 // #![warn(missing_docs)]
 #![allow(dead_code, unused_imports)]
 
+mod utils;
+
+pub mod types;
 pub mod lang;
-pub mod utils;
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -13,14 +15,17 @@ use std::rc::Rc;
 use std::slice::Iter;
 use std::str::FromStr;
 use std::sync::mpsc::channel;
+use std::sync::Arc;
 use std::thread;
 
-use crate::lang::{lexer::*, parser::*};
-use crate::utils::{ast::*, consts::*, num::*, position::*, state::*, token::*, data::*};
+use crate::lang::{lexer::*, parser::*, collapser::*};
+use crate::types::{ast::*, error::*, position::*, token::*};
+use crate::utils::{consts::*, state::*};
 
 macro_rules! v {($($x:expr),* $(,)?) => {vec![$($x.into(),)*]}}
 macro_rules! vr {($($x:expr),* $(,)?) => {&v![$($x,)*]}}
 
+// TODO: write collapser
 // TODO: add module for data
 
 // STD VARIABLES
@@ -34,19 +39,24 @@ use bstr::{BString, ByteSlice, ByteVec};
 async fn main() {
     println!("Hello, world!");
 
-    // let json = Json::from_str("{\"a\": [1, 2]}").unwrap();
-
-    // println!("json = {:#?}",
-    //     json.get(&["a", "foo", "baz", "bar", "lol"])
-    //     .map(|x| x.to_string())
-    // );
-
-    // println!("{}", STANDARD_FUNCTIONS.iter().map(|x| x.0).collect::<Vec<_>>().join("\n"));
-
-
-    test_state();
+    test_collapser();
+    // test_state();
     // test_parser();
     // test_lazy_parser();
+}
+
+#[allow(unused)]
+fn test_collapser() {
+    let filepath = "/home/user/cool/hexel/main.hxl".to_string();
+    let collapser = Collapser::new(filepath.clone());
+
+    let source = b"\
+#var foo = baz
+";
+
+    let rx = collapser.collapse(
+        IterativeParser::new(source, filepath, None, None)
+    );
 }
 
 #[allow(unused)]
@@ -116,7 +126,7 @@ GET foo
 ; a comment
 \n";
 
-    let mut parser = Parser::new(source, "foo.hxl", None, None);
+    let mut parser = Parser::new(source, "foo.hxl".to_string(), None, None);
 
     for node in parser {
         println!("node = {:#?}", node);
@@ -126,7 +136,7 @@ GET foo
 fn test_lexer() {
     let source = b"#require foo @{a:b x:}";
 
-    let mut lexer = Lexer::new(source, "foo", None, None);
+    let mut lexer = Lexer::new(source, "foo".to_string(), None, None);
     let mut tokens = Vec::new();
 
     while lexer.active() {
@@ -154,9 +164,9 @@ fn test_lazy_parser() {
 ; tar
 ; yolo";
 
-    let old_tokens = Parser::new(source1, "foo", None, None).parse();
+    let old_tokens = Parser::new(source1, "foo".to_string(), None, None).parse();
 
-    let mut parser = LazyParser::new(source2, old_tokens, "foo");
+    let mut parser = LazyParser::new(source2, old_tokens, "foo".to_string());
 
     for (node, status) in parser {
         println!("node = {:#?}", node.to_string());

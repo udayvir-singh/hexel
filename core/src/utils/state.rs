@@ -16,7 +16,8 @@ use mlua::{
 };
 use rand::{thread_rng, Rng};
 
-use super::{consts::*, error::*, num::*};
+use crate::types::error::*;
+use super::{consts::*, num::*};
 
 /* -------------------- *
  *         STATE        *

@@ -1,11 +1,12 @@
 //! Provides parsers for converting source code into an Abstract Syntax Tree (AST).
 
-use std::{mem, collections::VecDeque, rc::Rc};
+use std::{mem, collections::VecDeque, sync::Arc};
 
 use bstr::{BStr, ByteSlice};
 
 use super::lexer::Lexer;
-use crate::utils::{ast::*, consts::*, error::*, position::*, token::*};
+use crate::types::{ast::*, error::*, position::*, token::*};
+use crate::utils::consts::*;
 
 /* -------------------- *
  *        PARSER        *
@@ -16,7 +17,7 @@ pub struct Parser<'a> {
 }
 
 impl<'a> IntoIterator for Parser<'a> {
-    type Item = AstNode;
+    type Item = Arc<AstNode>;
     type IntoIter = IterativeParser<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -33,7 +34,7 @@ impl<'a> Parser<'a> {
     #[must_use]
     pub fn new(
         source: &'a [u8],
-        filepath: &'a str,
+        filepath: String,
         byte_offset: Option<usize>,
         line_offset: Option<u32>,
     ) -> Self {
@@ -44,8 +45,8 @@ impl<'a> Parser<'a> {
 
     /// Parses the source code producing an Abstract Syntax Tree (AST).
     #[must_use]
-    pub fn parse(self) -> Vec<Rc<AstNode>> {
-        self.iter.map(Rc::new).collect()
+    pub fn parse(self) -> Vec<Arc<AstNode>> {
+        self.iter.collect()
     }
 }
 
@@ -68,7 +69,7 @@ enum ParserStore {
 /// todo
 pub struct IterativeParser<'a> {
     source: &'a [u8],
-    filepath: &'a str,
+    filepath: String,
     byte_offset: usize,
     lexer: Lexer<'a>,
     state: ParserState,
@@ -79,11 +80,11 @@ impl<'a> Iterator for IterativeParser<'a> {
     /* -------------------- *
      *       ITERATOR       *
      * -------------------- */
-    type Item = AstNode;
+    type Item = Arc<AstNode>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_node()
+        self.next_node().map(Arc::new)
     }
 
 }
@@ -97,13 +98,13 @@ impl<'a> IterativeParser<'a> {
     #[must_use]
     pub fn new(
         source: &'a [u8],
-        filepath: &'a str,
+        filepath: String,
         byte_offset: Option<usize>,
         line_offset: Option<u32>,
     ) -> Self {
         Self {
             source,
-            filepath,
+            filepath: filepath.clone(),
             byte_offset: byte_offset.unwrap_or(0),
             lexer: Lexer::new(source, filepath, byte_offset, line_offset),
             state: ParserState::Header,
@@ -529,8 +530,9 @@ impl<'a> IterativeParser<'a> {
         }
 
         // utils
+        let filepath = self.filepath.clone();
         let err = |code, scope, bounds| {
-            Some(ScopedNodeError::new(code, scope, bounds, None, self.filepath.to_string()))
+            Some(ScopedNodeError::new(code, scope, bounds, None, filepath))
         };
 
         // collect at-sign
@@ -1105,7 +1107,7 @@ impl<'a> IterativeParser<'a> {
  *      LAZY PARSER     *
  * -------------------- */
 enum LazyParserState<'a> {
-    Top(usize, Option<Rc<AstNode>>),
+    Top(usize, Option<Arc<AstNode>>),
     Middle(IterativeParser<'a>),
     Bottom(PositionDelta),
 }
@@ -1120,8 +1122,8 @@ enum LazyParserState<'a> {
 /// Additionally, consider periodically performing a clean parse for assurance.
 pub struct LazyParser<'a> {
     source: &'a [u8],
-    old_ast: VecDeque<Rc<AstNode>>,
-    filepath: &'a str,
+    old_ast: VecDeque<Arc<AstNode>>,
+    filepath: String,
     state: LazyParserState<'a>,
 }
 
@@ -1140,7 +1142,7 @@ impl<'a> Iterator for LazyParser<'a> {
     /* -------------------- *
      *       ITERATOR       *
      * -------------------- */
-    type Item = (Rc<AstNode>, LazyNodeStatus);
+    type Item = (Arc<AstNode>, LazyNodeStatus);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_node()
@@ -1156,8 +1158,8 @@ impl<'a> LazyParser<'a> {
     #[must_use]
     pub fn new(
         source: &'a [u8],
-        old_ast: Vec<Rc<AstNode>>,
-        filepath: &'a str,
+        old_ast: Vec<Arc<AstNode>>,
+        filepath: String,
     ) -> Self {
         Self {
             source,
@@ -1171,13 +1173,13 @@ impl<'a> LazyParser<'a> {
     /* -------------------- *
      *       NEXT NODE      *
      * -------------------- */
-    fn next_node(&mut self) -> Option<(Rc<AstNode>, LazyNodeStatus)> {
+    fn next_node(&mut self) -> Option<(Arc<AstNode>, LazyNodeStatus)> {
         self.next_top_node()
             .or_else(|| self.next_middle_node())
             .or_else(|| self.next_bottom_node())
     }
 
-    fn next_top_node(&mut self) -> Option<(Rc<AstNode>, LazyNodeStatus)> {
+    fn next_top_node(&mut self) -> Option<(Arc<AstNode>, LazyNodeStatus)> {
         if let LazyParserState::Top(change_start, ref prev_node) = self.state {
             if let Some(old_node) = self.old_ast.front() {
                 let reference = old_node.source();
@@ -1218,7 +1220,7 @@ impl<'a> LazyParser<'a> {
             if change_start < change_end {
                 self.state = LazyParserState::Middle(IterativeParser::new(
                     &self.source[change_start..change_end],
-                    self.filepath,
+                    self.filepath.clone(),
                     Some(change_start),
                     Some(prev_node.as_ref().map_or(1, |x| x.line_end())),
                 ));
@@ -1236,7 +1238,7 @@ impl<'a> LazyParser<'a> {
         None
     }
 
-    fn next_middle_node(&mut self) -> Option<(Rc<AstNode>, LazyNodeStatus)> {
+    fn next_middle_node(&mut self) -> Option<(Arc<AstNode>, LazyNodeStatus)> {
         if let LazyParserState::Middle(parser) = &mut self.state {
             let mut node = parser.next()?;
 
@@ -1246,7 +1248,7 @@ impl<'a> LazyParser<'a> {
 
                 *parser = IterativeParser::new(
                     &self.source[byte_start..],
-                    self.filepath,
+                    self.filepath.clone(),
                     Some(byte_start),
                     Some(line_start),
                 );
@@ -1265,23 +1267,23 @@ impl<'a> LazyParser<'a> {
                 self.state = LazyParserState::Bottom(delta);
             }
 
-            Some((Rc::new(node), LazyNodeStatus::Fresh))
+            Some((node, LazyNodeStatus::Fresh))
         } else {
             None
         }
     }
 
-    fn next_bottom_node(&mut self) -> Option<(Rc<AstNode>, LazyNodeStatus)> {
+    fn next_bottom_node(&mut self) -> Option<(Arc<AstNode>, LazyNodeStatus)> {
         if let LazyParserState::Bottom(delta) = self.state {
             if let Some(node) = self.old_ast.pop_front() {
-                return if delta.byte_delta | delta.line_delta as usize == 0 {
+                return if delta.is_zero() {
                     Some((node, LazyNodeStatus::Stale))
                 } else {
-                    let mut node = Rc::unwrap_or_clone(node);
+                    let mut node = Arc::unwrap_or_clone(node);
 
                     node.update_position(delta);
 
-                    Some((Rc::new(node), LazyNodeStatus::Moved))
+                    Some((Arc::new(node), LazyNodeStatus::Moved))
                 };
             }
         }

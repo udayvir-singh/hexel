@@ -26,7 +26,7 @@ use std::mem;
 
 use bstr::{BStr, ByteSlice};
 
-use crate::utils::{error::*, position::*, token::*};
+use crate::types::{error::*, position::*, token::*};
 
 /* -------------------- *
  *         LEXER        *
@@ -34,7 +34,7 @@ use crate::utils::{error::*, position::*, token::*};
 /// Represents a lexer used for tokenizing source code.
 pub struct Lexer<'a> {
     source: &'a [u8],
-    filepath: &'a str,
+    filepath: String,
     byte: usize,
     line: u32,
     col: u32,
@@ -50,7 +50,7 @@ impl<'a> Lexer<'a> {
     #[must_use]
     pub fn new(
         source: &'a [u8],
-        filepath: &'a str,
+        filepath: String,
         byte_offset: Option<usize>,
         line_offset: Option<u32>,
     ) -> Self {

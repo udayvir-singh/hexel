@@ -174,6 +174,11 @@ impl PositionDelta {
     pub fn new(add: bool, byte_delta: usize, line_delta: u32) -> Self {
         Self { add, byte_delta, line_delta }
     }
+
+    /// todo
+    pub fn is_zero(&self) -> bool {
+        self.byte_delta | self.line_delta as usize == 0
+    }
 }
 
 /// Provides a method to update the position of the implementing object.

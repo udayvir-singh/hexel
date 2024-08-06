@@ -4,16 +4,10 @@ use std::{
     str::FromStr,
 };
 
-use serde::Deserialize;
-use serde_json::{
-    from_str as decode_json,
-    Value as JsonValue,
-};
-use serde_yaml::{
-    from_str as decode_yaml,
-    to_string as encode_yaml,
-    Value as YamlValue,
-};
+use bstr::BString;
+use serde::Serialize;
+use serde_json::Value as JsonValue;
+use serde_yaml::Value as YamlValue;
 
 /* -------------------- *
  *         JSON         *
@@ -23,22 +17,22 @@ pub struct Json {
     value: JsonValue,
 }
 
-impl Display for Json {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Display::fmt(&self.value, f)
+impl Serialize for Json {
+    #[inline]
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        Serialize::serialize(&self.value, serializer)
     }
 }
-
-// impl<'a, T: Deserialize<'a>> TryFrom<T> for Json {
-    
-// }
 
 impl FromStr for Json {
     type Err = String;
 
     #[inline]
     fn from_str(json_str: &str) -> Result<Self, Self::Err> {
-        decode_json(json_str).map(Self::new).map_err(capitalize)
+        Self::decode(json_str.as_bytes())
     }
 }
 
@@ -51,8 +45,21 @@ impl Json {
 
     #[inline]
     #[must_use]
-    pub fn value(self) -> JsonValue {
-        self.value
+    pub fn decode<T: AsRef<[u8]>>(source: T) -> Result<Self, String> {
+        serde_json::from_slice(source.as_ref())
+            .map(Self::new)
+            .map_err(capitalize)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn encode<T>(value: &T) -> Result<BString, String>
+    where
+        T: ?Sized + Serialize,
+    {
+        serde_json::to_vec(value)
+            .map(BString::new)
+            .map_err(capitalize)
     }
 
     #[must_use]
@@ -101,6 +108,8 @@ impl Json {
 
         Ok(value)
     }
+
+
 }
 
 
@@ -110,16 +119,6 @@ impl Json {
 #[derive(Debug)]
 pub struct Yaml {
     value: YamlValue,
-}
-
-impl Display for Yaml {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Ok(x) = encode_yaml(&self.value) {
-            write!(f, "{}", x)
-        } else {
-            write!(f, "<YAML UTF-8 ERROR>")
-        }
-    }
 }
 
 
