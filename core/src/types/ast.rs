@@ -4,7 +4,7 @@ use std::fmt::{self, Display};
 
 use bstr::BStr;
 
-use super::{error::*, position::*, token::*};
+use super::{err::*, pos::*, token::*};
 
 /* -------------------- *
  *        UTILS         *
@@ -25,9 +25,9 @@ fn fmt_nodes<T: Display>(f: &mut fmt::Formatter, collection: &[T]) -> fmt::Resul
 /// Represents the different types of statements created by the parser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatementKind {
-    Require,
     Assign,
     Macro,
+    Require,
 }
 
 /// Represents the scope of an error in a statement.

@@ -7,7 +7,7 @@ use std::{
     ops::Range,
 };
 
-use super::{error::*, position::*};
+use super::{err::*, pos::*};
 
 /* -------------------- *
  *    TOKEN METADATA    *

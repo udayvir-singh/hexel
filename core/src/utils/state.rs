@@ -1,6 +1,6 @@
 //! todo
 
-use std::{mem, collections::HashMap, rc::Rc, str::FromStr, sync::RwLock};
+use std::{collections::HashMap, mem, rc::Rc, str::FromStr, sync::{Arc, RwLock}};
 
 use bstr::{BStr, BString, ByteSlice};
 use mlua::{
@@ -16,7 +16,7 @@ use mlua::{
 };
 use rand::{thread_rng, Rng};
 
-use crate::types::error::*;
+use crate::types::err::*;
 use super::{consts::*, num::*};
 
 /* -------------------- *

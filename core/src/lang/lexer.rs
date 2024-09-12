@@ -26,7 +26,7 @@ use std::mem;
 
 use bstr::{BStr, ByteSlice};
 
-use crate::types::{error::*, position::*, token::*};
+use crate::types::{err::*, pos::*, token::*};
 
 /* -------------------- *
  *         LEXER        *

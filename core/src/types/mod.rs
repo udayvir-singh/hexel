@@ -1,6 +1,7 @@
 //! todo
 
 pub mod ast;
-pub mod error;
-pub mod position;
+pub mod err;
+pub mod msg;
+pub mod pos;
 pub mod token;

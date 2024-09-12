@@ -7,7 +7,6 @@ edition = "2021"
 bigdecimal = "0.4.4"
 bstr = "1.10.0"
 deserr = "0.6.1"
-futures = "0.3.30"
 json5 = "0.4.1"
 mlua = { version = "0.9.8", features = ["luajit", "vendored", "serialize"] }
 num-bigint = { version = "0.4.6", features = ["rand"] }

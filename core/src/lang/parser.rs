@@ -5,7 +5,7 @@ use std::{mem, collections::VecDeque, sync::Arc};
 use bstr::{BStr, ByteSlice};
 
 use super::lexer::Lexer;
-use crate::types::{ast::*, error::*, position::*, token::*};
+use crate::types::{ast::*, err::*, pos::*, token::*};
 use crate::utils::consts::*;
 
 /* -------------------- *

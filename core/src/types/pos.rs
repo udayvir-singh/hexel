@@ -177,7 +177,7 @@ impl PositionDelta {
 
     /// todo
     pub fn is_zero(&self) -> bool {
-        self.byte_delta | self.line_delta as usize == 0
+        self.byte_delta == 0 && self.line_delta == 0
     }
 }
 

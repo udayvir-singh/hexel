@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::thread;
 
 use crate::lang::{lexer::*, parser::*, collapser::*};
-use crate::types::{ast::*, error::*, position::*, token::*};
+use crate::types::{ast::*, err::*, pos::*, token::*};
 use crate::utils::{consts::*, state::*};
 
 macro_rules! v {($($x:expr),* $(,)?) => {vec![$($x.into(),)*]}}
@@ -39,14 +39,14 @@ use bstr::{BString, ByteSlice, ByteVec};
 async fn main() {
     println!("Hello, world!");
 
-    test_collapser();
+    test_collapser().await;
     // test_state();
     // test_parser();
     // test_lazy_parser();
 }
 
 #[allow(unused)]
-fn test_collapser() {
+async fn test_collapser() {
     let filepath = "/home/user/cool/hexel/main.hxl".to_string();
     let collapser = Collapser::new(filepath.clone());
 
@@ -54,9 +54,13 @@ fn test_collapser() {
 #var foo = baz
 ";
 
-    let rx = collapser.collapse(
+    let mut rx = collapser.collapse(
         IterativeParser::new(source, filepath, None, None)
     );
+
+    while let Some(i) = rx.recv().await {
+        println!("got = {:?}", i);
+    }
 }
 
 #[allow(unused)]
